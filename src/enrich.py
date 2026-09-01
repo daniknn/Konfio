@@ -74,11 +74,21 @@ class Classifier(Protocol):
 
 
 class GeminiClassifier:
-    def __init__(self, api_key: str, model: str, sleep_between: float = 1.0) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        sleep_between: float = 1.0,
+        backoff_base: float = BACKOFF_SECONDS,
+    ) -> None:
         self._client = genai.Client(api_key=api_key)
         self._model = model
         self._sleep_between = sleep_between
+        self._backoff_base = backoff_base
         self.calls = 0
+        # Phase 3 reports a measured cost per lead, not an estimated one.
+        self.prompt_tokens = 0
+        self.output_tokens = 0
 
     def _payload(self, places: list[RawPlace]) -> str:
         return json.dumps(
@@ -123,16 +133,24 @@ class GeminiClassifier:
                     raise
                 last_error = exc
                 if attempt < MAX_ATTEMPTS - 1:
-                    delay = BACKOFF_SECONDS * (2**attempt)
+                    delay = self._backoff_base * (2**attempt)
                     logger.warning("Gemini falló, reintentando en %.0fs: %s", delay, exc)
                     time.sleep(delay)
                 continue
 
             self.calls += 1
+            self._record_usage(response)
             time.sleep(self._sleep_between)
             return _parse_response(response)
 
         raise RuntimeError(f"Gemini falló tras {MAX_ATTEMPTS} intentos: {last_error}")
+
+    def _record_usage(self, response: Any) -> None:
+        usage = getattr(response, "usage_metadata", None)
+        if usage is None:
+            return
+        self.prompt_tokens += usage.prompt_token_count or 0
+        self.output_tokens += usage.candidates_token_count or 0
 
 
 def _is_retryable(exc: errors.APIError) -> bool:

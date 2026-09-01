@@ -1,6 +1,10 @@
+from types import SimpleNamespace
+
 import pytest
+from google.genai import errors
 
 from src.enrich import (
+    GeminiClassifier,
     reconcile,
     run_enrichment,
     signal_from_payment_options,
@@ -45,6 +49,58 @@ class FakeClassifier:
         if self.batches in self._fail_on:
             raise RuntimeError("cuota agotada")
         return self._replies.pop(0)
+
+
+class _StubModels:
+    def __init__(self, outcomes):
+        self.outcomes = outcomes
+        self.calls = 0
+
+    def generate_content(self, **_):
+        self.calls += 1
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+def _gemini(outcomes) -> tuple[GeminiClassifier, _StubModels]:
+    classifier = GeminiClassifier("test-key", "test-model", sleep_between=0, backoff_base=0)
+    models = _StubModels(outcomes)
+    classifier._client = SimpleNamespace(models=models)
+    return classifier, models
+
+
+def _response(parsed, prompt_tokens=100, output_tokens=20):
+    return SimpleNamespace(
+        parsed=parsed,
+        usage_metadata=SimpleNamespace(
+            prompt_token_count=prompt_tokens, candidates_token_count=output_tokens
+        ),
+    )
+
+
+def test_classifier_records_token_usage():
+    """Phase 3 reports a measured cost per lead, so usage must be accumulated."""
+    reply = [ClassifiedLead(place_id="p1", **_classification().model_dump())]
+    classifier, _ = _gemini([_response(reply)])
+    classifier.classify([_place()])
+    assert (classifier.prompt_tokens, classifier.output_tokens) == (100, 20)
+
+
+def test_classifier_raises_after_exhausting_retries():
+    outage = [errors.ServerError(503, {"error": {"message": "boom"}}) for _ in range(3)]
+    classifier, models = _gemini(outage)
+    with pytest.raises(RuntimeError, match="3 intentos"):
+        classifier.classify([_place()])
+    assert models.calls == 3
+
+
+def test_classifier_does_not_retry_a_bad_request():
+    classifier, models = _gemini([errors.ClientError(400, {"error": {"message": "malo"}})])
+    with pytest.raises(errors.ClientError):
+        classifier.classify([_place()])
+    assert models.calls == 1
 
 
 def test_structured_cash_only_overrides_the_model():
