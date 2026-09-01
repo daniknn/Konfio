@@ -87,6 +87,17 @@ class LeadClassification(BaseModel):
     rationale: str = Field(description="Una frase explicando la clasificación.")
 
 
+class ClassifiedLead(LeadClassification):
+    """A classification carrying the merchant it belongs to.
+
+    Batched calls send several merchants at once, so the model must echo the
+    place_id back — matching replies to merchants by array position silently
+    corrupts the whole batch the first time the model drops an item.
+    """
+
+    place_id: str = Field(description="El place_id exacto del comercio, copiado tal cual.")
+
+
 class ProcessedLead(BaseModel):
     """A raw place joined with its classification — one row of processed_leads.csv."""
 

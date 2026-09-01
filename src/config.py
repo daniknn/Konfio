@@ -47,17 +47,39 @@ class Settings:
     gemini_model: str
     max_place_details: int
     target_leads: int
+    gemini_batch_size: int
 
     @classmethod
     def load(cls) -> Settings:
         return cls(
             google_maps_api_key=_required("GOOGLE_MAPS_API_KEY"),
             gemini_api_key=_required("GEMINI_API_KEY"),
-            gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
+            # Floating alias on purpose: pinned Gemini versions get retired, and
+            # a stale pin makes a fresh clone fail with a 404 instead of running.
+            gemini_model=os.getenv("GEMINI_MODEL", "gemini-flash-latest"),
             # Ceiling exists so a runaway run cannot spill past the Places free tier.
             max_place_details=_int_env("MAX_PLACE_DETAILS", 600),
             target_leads=_int_env("TARGET_LEADS", 500),
+            # Batching amortizes the ~3K-token catalog prefix across merchants.
+            gemini_batch_size=_int_env("GEMINI_BATCH_SIZE", 10),
         )
+
+
+# Konfío is a SOFOM ENR with a pending CNBV banking licence. Outbound copy that
+# implies deposit-taking creates regulatory exposure, so generated messages
+# containing any of these are rejected rather than edited.
+PROHIBITED_TERMS = (
+    "banco",
+    "bancaria",
+    "cuenta de cheques",
+    "depósito",
+    "deposito",
+    "tesorería",
+    "tesoreria",
+    "rendimiento",
+    "inversión",
+    "inversion",
+)
 
 
 # FAMILIA values from the MCC catalog that are in scope for an SME card terminal.
