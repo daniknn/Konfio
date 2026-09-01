@@ -75,9 +75,7 @@ class LeadClassification(BaseModel):
         ge=0, le=100, description="Probabilidad de que este comercio adopte una terminal hoy."
     )
     eligible: bool = Field(description="Si califica como lead de TPV para Konfío.")
-    disqualifier: str = Field(
-        description="Motivo del descarte, o cadena vacía si es elegible."
-    )
+    disqualifier: str = Field(description="Motivo del descarte, o cadena vacía si es elegible.")
     outreach_message: str = Field(
         description=(
             "Mensaje de WhatsApp en español mexicano, máximo 50 palabras, tuteando, "

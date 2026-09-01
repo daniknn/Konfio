@@ -138,27 +138,28 @@ ZONAS = (
     ("Monterrey", "García, Nuevo León"),
 )
 
-# Giros chosen for cash operation, not for size: each maps to a FAMILIA in scope,
-# and each is a trade where the owner still rings up the sale by hand.
+# Ranked by qualified leads per screening call, measured over 2,500 merchants —
+# not by how cash-heavy the trade feels. The two rankings disagree: recaudería is
+# 39% cash-only but converts at 9.4%, because those owners rarely publish a phone,
+# and reachability is the larger loss in this funnel.
+#
+#   fonda económica  29.8%      mercería       10.8%      cremería      1.5%
+#   tortillería      27.1%      pollería        9.8%      tlapalería    1.4%
+#   taquería         18.9%      recaudería      9.4%      dental        1.4%
+#   panadería        18.1%      estética        9.1%      ropa          0.7%
+#   miscelánea       14.1%      barbería        5.6%      refaccionaria 0.0%
+#                               carnicería      4.9%      farmacia      0.0%
+#                               papelería       4.4%
+#
+# The bottom nine cost 1,244 screening calls and returned 13 leads between them.
+# Keeping the top five trades FAMILIA breadth for cost, which is the right trade
+# while the segment is being proven and the wrong one once it is.
 GIRO_QUERIES = (
-    "tortillería",
-    "recaudería",
-    "miscelánea",
-    "cremería",
-    "pollería",
-    "carnicería",
     "fonda económica",
+    "tortillería",
     "taquería",
     "panadería",
-    "papelería",
-    "mercería",
-    "estética y salón de belleza",
-    "barbería",
-    "tlapalería y ferretería",
-    "refaccionaria automotriz",
-    "farmacia independiente",
-    "consultorio dental",
-    "tienda de ropa",
+    "miscelánea",
 )
 
 

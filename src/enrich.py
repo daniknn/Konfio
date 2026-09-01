@@ -258,9 +258,7 @@ def run_enrichment(
             if place is None:
                 logger.warning("El modelo devolvió un place_id desconocido: %s", item.place_id)
                 continue
-            classification = reconcile(
-                place, LeadClassification.model_validate(item.model_dump())
-            )
+            classification = reconcile(place, LeadClassification.model_validate(item.model_dump()))
             leads.append(
                 ProcessedLead(place=place, classification=classification, trace_id=trace_id)
             )
@@ -319,12 +317,26 @@ def _row(lead: ProcessedLead) -> dict[str, Any]:
     }
 
 
-def write_processed_leads(leads: list[ProcessedLead]) -> None:
+def read_processed_leads() -> list[dict[str, Any]]:
+    if not PROCESSED_LEADS_PATH.exists():
+        return []
+    with PROCESSED_LEADS_PATH.open(encoding="utf-8", newline="") as f:
+        return list(csv.DictReader(f))
+
+
+def write_processed_leads(
+    leads: list[ProcessedLead], existing: list[dict[str, Any]] | None = None
+) -> None:
+    """Merge by place_id and re-sort, so a later run adds leads instead of replacing them."""
+    by_id = {row["place_id"]: row for row in existing or []}
+    by_id.update({lead.place.place_id: _row(lead) for lead in leads})
+    rows = sorted(by_id.values(), key=lambda row: int(row["intent_score"]), reverse=True)
+
     PROCESSED_LEADS_PATH.parent.mkdir(parents=True, exist_ok=True)
     with PROCESSED_LEADS_PATH.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=CSV_COLUMNS)
         writer.writeheader()
-        writer.writerows(_row(lead) for lead in leads)
+        writer.writerows(rows)
 
 
 def build_classifier(settings: Settings) -> GeminiClassifier:

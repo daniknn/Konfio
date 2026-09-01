@@ -28,16 +28,26 @@ So the qualifier was right and the **sample** was wrong. Text Search ranks by pr
 | `recaudería en Ecatepec` | **50%** |
 | `tortillería en Iztapalapa` | **80%** (16/20) |
 
-Same code, same cost per merchant, ~10x the addressable rate. The search plan now targets **20 peripheral municipalities × 18 cash-operated giros**. The scraper was never the hard part; the targeting hypothesis is the product.
+Same code, same cost per merchant, ~10x the addressable rate. The scraper was never the hard part; the targeting hypothesis is the product.
+
+## What the second run taught us
+
+Re-aimed at 20 peripheral municipalities × 18 cash-operated giros, the pipeline screened 2,500 merchants and returned **226 qualified leads** — 9% overall, and the run produced enough volume to rank its own inputs. Three cuts followed, each from measurement rather than intuition:
+
+- **Giros were ranked by qualified leads per screening call, not by how cash-heavy the trade feels.** The two rankings disagree: recaudería is 39% cash-only but converts at 9.4%, because those owners rarely publish a phone. The bottom nine giros spent 1,244 screening calls and returned 13 leads between them. The plan now runs the **top five** — fonda económica 29.8%, tortillería 27.1%, taquería 18.9%, panadería 18.1%, miscelánea 14.1%.
+- **Merchants whose `paymentOptions` field is silent were dropped.** They cost one Atmosphere call each — 331 of them — and converted at 1.5%. A silent field usually means a quiet listing, not a cash register. Removing that cohort eliminated *all* mandatory reviews spend.
+- **Reviews buy message quality, not qualification.** For 222 of the 226 eligible leads the evidence quoted in the message came from Google's structured field, not from a review. So reviews became purely optional, capped by `REVIEW_BUDGET`, and the first thing cut when the allowance runs out.
+
+The dominant remaining loss is reachability: only **46% of cash-only merchants publish a phone number**. That, not the qualifier, is what the next iteration has to attack.
 
 ## Pipeline
 
 ```
 Text Search          Place Details          Place Details        Gemini              processed_leads.csv
 giro × zona     ──▶  SCREEN (Enterprise) ──▶ REVIEWS (Atmos.) ──▶ structured output ─▶
-360 queries          paymentOptions          only where they      MCC + FAMILIA
-                     phone, ratings          change the answer    payment signal + evidence
-                                                                  intent score 0-100
+5 × 20 = 100         paymentOptions          optional, only for   MCC + FAMILIA
+queries              phone, ratings          merchants worth      payment signal + evidence
+                                             quoting              intent score 0-100
                                                                   eligibility + reason
                                                                   es-MX WhatsApp message
 ```
@@ -64,9 +74,11 @@ Google bills Place Details per call at the highest field tier touched, and each 
 
 Asking for `paymentOptions` and `reviews` in one call — the obvious implementation — charges every merchant at the top tier and burns one shared allowance. But `paymentOptions` alone disqualifies most of them, and it is a whole SKU cheaper.
 
-So the call is split. Every candidate gets an **Enterprise screen**; only merchants that survive it earn an **Atmosphere reviews call**. Within those, reviews are mandatory for a merchant whose payment field is silent (nothing else can qualify it) and optional for one Google already flags cash-only (already qualified; the quote only sharpens the message), so the optional ones draw from `REVIEW_BUDGET` while the free allowance lasts.
+So the call is split. Every candidate gets an **Enterprise screen**; only merchants that survive it earn an **Atmosphere reviews call**. And since the structured field is what qualifies a merchant, that second call is never load-bearing — it buys a sharper first line, nothing more. It is therefore rationed twice: only for merchants with at least 30 reviews (below that, Google returns three and none of them mention how the customer paid), and only while `REVIEW_BUDGET` lasts.
 
-The run also stops on the result rather than the budget: screening ends as soon as `TARGET_LEADS × 1.25` prospects have survived it. `MAX_PLACE_DETAILS` went back to being a safety net against a runaway loop.
+The run also stops on the result rather than the budget: screening ends as soon as `TARGET_LEADS × 1.10` prospects have survived it. `MAX_PLACE_DETAILS` is a safety net against a runaway loop, not the intended stopping condition.
+
+**Runs accumulate.** A merchant already in `data/` is never re-screened: the pipeline reads what is on disk, extracts only the shortfall to `TARGET_LEADS`, and merges by `place_id`. This is a standing weekly job, so the second week should cost what the *new* merchants cost, not what the whole list costs. `uv run tpv-pipeline --fresh` starts the list over.
 
 ## Quickstart
 
@@ -107,7 +119,7 @@ src/places.py            Places API client: search, Enterprise screen, Atmospher
 src/extract.py           Phase 1 — search plan, via-negativa filtering, budget guards
 src/enrich.py            Phase 2 — Gemini classification, reconciliation, CSV output
 src/pipeline.py          Entry point (`tpv-pipeline`)
-tests/                   pytest — 51 tests, no network
+tests/                   pytest — 57 tests, no network
 ```
 
 ## Design notes

@@ -21,9 +21,11 @@ from .places import PlacesClient, PlacesError, signal_from_payment_options, to_r
 
 logger = logging.getLogger(__name__)
 
-# Screen this much past TARGET_LEADS to absorb the losses that only show up after
-# the LLM has read the reviews. Measured at 1.25 on the first corrected run.
-OVERSHOOT = 1.25
+# Screen slightly past what is missing to absorb the few prospects the LLM still
+# rejects on an out-of-scope MCC or a compliance violation. Now that qualification
+# rests on Google's structured field rather than the model's reading, that leak is
+# small: 226 of 232 cash-only merchants with a phone survived the last run.
+OVERSHOOT = 1.10
 
 # Below this, Google returns two or three reviews and none of them mention how
 # the customer paid — not enough for a quote worth the priciest SKU we have.
@@ -80,23 +82,25 @@ def collect_candidates(
 
 
 def _is_prospect(detail: dict[str, Any]) -> bool:
-    """Could this merchant ever buy a terminal from us?
+    """Could this merchant buy a terminal from us?
 
-    Two ways to be unsellable, both decidable from the cheap screen: no published
-    phone means no channel, and a structured field confirming card acceptance
-    means the merchant is not this segment. Measured on 458 card-accepting
-    merchants, only 1% of their reviews mentioned any pain worth displacing a
-    terminal over, so paying the top SKU to read the other 99% is not worth it.
+    Both halves are decided on the cheap screen, and both were set by
+    measurement rather than intuition:
+
+    - No published phone, no channel. Among cash-only merchants only 46% list
+      one, so this is the single largest source of loss in the funnel.
+    - The payment field has to say cash-only. Merchants Google already reports
+      as card-accepting are not the segment: across 458 of them, just 1% had a
+      review complaining about surcharges, minimums or a broken terminal.
+      Merchants Google is *silent* about are excluded too, which is the less
+      obvious call — 331 of them cost a reviews call each and converted at
+      1.5%, because a silent field usually means a quiet listing, not a cash
+      register.
     """
     if not detail.get("nationalPhoneNumber"):
         return False
     structured = signal_from_payment_options(detail.get("paymentOptions") or {})
-    return structured is not PaymentSignal.COMPETITOR_TERMINAL
-
-
-def _needs_reviews(detail: dict[str, Any]) -> bool:
-    """Reviews are the only evidence that can qualify a merchant Google is silent about."""
-    return signal_from_payment_options(detail.get("paymentOptions") or {}) is None
+    return structured is PaymentSignal.CONFIRMED_NO_CARD
 
 
 def fetch_details(
@@ -114,10 +118,10 @@ def fetch_details(
     have survived the screen there is nothing left to buy, so the run stops on
     the result it wanted rather than on the budget it was allowed.
 
-    A merchant Google is silent about always gets its reviews — they are the only
-    evidence that can qualify it. One Google already flags as cash-only is
-    qualified either way, so its reviews are bought only while `review_budget`
-    lasts, and only when there are enough of them for a quote to exist.
+    Reviews are never what qualifies a merchant — Google's structured field is —
+    so they are bought only while `review_budget` lasts, and only for merchants
+    with enough of them for a quote to exist. They buy message quality, nothing
+    else, which is why they are the first thing cut when the allowance runs out.
     """
     places: list[RawPlace] = []
     prospects = 0
@@ -137,9 +141,8 @@ def fetch_details(
         if _is_prospect(detail):
             prospects += 1
             quotable = (detail.get("userRatingCount") or 0) >= MIN_REVIEWS_TO_QUOTE
-            if _needs_reviews(detail) or (budget > 0 and quotable):
-                if not _needs_reviews(detail):
-                    budget -= 1
+            if budget > 0 and quotable:
+                budget -= 1
                 try:
                     detail["reviews"] = client.reviews(place["id"])
                 except PlacesError:
@@ -166,37 +169,67 @@ def fetch_details(
     return places
 
 
-def write_raw_leads(places: list[RawPlace]) -> None:
+def read_raw_leads() -> list[dict[str, Any]]:
+    if not RAW_LEADS_PATH.exists():
+        return []
+    return json.loads(RAW_LEADS_PATH.read_text(encoding="utf-8"))
+
+
+def write_raw_leads(places: list[RawPlace], existing: list[dict[str, Any]] | None = None) -> None:
+    by_id = {p["place_id"]: p for p in existing or []}
+    by_id.update({p.place_id: p.model_dump() for p in places})
     RAW_LEADS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    payload = [p.model_dump() for p in places]
     RAW_LEADS_PATH.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        json.dumps(list(by_id.values()), ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
 
-def run_extraction(settings: Settings, trace_id: str) -> list[RawPlace]:
+def run_extraction(
+    settings: Settings,
+    trace_id: str,
+    *,
+    fresh: bool = False,
+    already_qualified: int = 0,
+) -> list[RawPlace]:
+    """Extract the merchants still missing to reach TARGET_LEADS.
+
+    A merchant already on disk is never re-screened. Lead generation is a
+    standing job, not a one-shot script: the second week should cost what the
+    new merchants cost, not what the whole list costs.
+    """
+    existing = [] if fresh else read_raw_leads()
+    known = {p["place_id"] for p in existing}
+    missing = max(settings.target_leads - already_qualified, 0)
+    if not missing:
+        logger.info("Ya hay %d leads calificados; no hace falta extraer", already_qualified)
+        return []
+
     client = PlacesClient(settings.google_maps_api_key)
     try:
-        candidates = collect_candidates(client, search_plan())
+        candidates = [
+            c for c in collect_candidates(client, search_plan()) if c[0]["id"] not in known
+        ]
         logger.info(
-            "%d candidatos únicos; tope de detalles: %d",
+            "%d candidatos nuevos (%d ya conocidos); faltan %d leads; tope de screenings: %d",
             len(candidates),
+            len(known),
+            missing,
             settings.max_place_details,
         )
-        # Some survivors still fall out at the LLM stage (out-of-scope MCC, a
-        # model that reads the reviews and finds a terminal), so aim past target.
+        # A few prospects still fall out at the LLM stage on an out-of-scope MCC
+        # or a compliance violation, so aim slightly past what is missing.
         places = fetch_details(
             client,
             candidates,
             settings.max_place_details,
             trace_id,
-            target=int(settings.target_leads * OVERSHOOT),
+            target=int(missing * OVERSHOOT),
             review_budget=settings.review_budget,
         )
     finally:
         client.close()
 
-    write_raw_leads(places)
+    write_raw_leads(places, existing)
     logger.info(
         "Extracción lista: %d comercios · %d búsquedas · %d screenings · %d reseñas → %s",
         len(places),

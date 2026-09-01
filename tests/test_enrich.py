@@ -196,7 +196,10 @@ def test_long_message_warns_but_does_not_disqualify(caplog):
     ("options", "expected"),
     [
         ({"acceptsCashOnly": True}, PaymentSignal.CONFIRMED_NO_CARD),
-        ({"acceptsCreditCards": False, "acceptsDebitCards": False}, PaymentSignal.CONFIRMED_NO_CARD),
+        (
+            {"acceptsCreditCards": False, "acceptsDebitCards": False},
+            PaymentSignal.CONFIRMED_NO_CARD,
+        ),
         ({"acceptsCreditCards": True}, PaymentSignal.COMPETITOR_TERMINAL),
         ({}, None),
     ],

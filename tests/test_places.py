@@ -96,7 +96,11 @@ def test_collect_candidates_drops_chains_closed_and_duplicates():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=payload)
 
-    tasks = [SearchTask(query="abarrotes en CDMX", giro="abarrotes", plaza="Ciudad de México", zona="CDMX")]
+    tasks = [
+        SearchTask(
+            query="abarrotes en CDMX", giro="abarrotes", plaza="Ciudad de México", zona="CDMX"
+        )
+    ]
     candidates = collect_candidates(_client(handler), tasks)
     assert [c[0]["id"] for c in candidates] == ["keep"]
 
@@ -115,8 +119,12 @@ def test_collect_candidates_interleaves_across_queries():
         return httpx.Response(200, json=by_query[query])
 
     tasks = [
-        SearchTask(query="abarrotes en CDMX", giro="abarrotes", plaza="Ciudad de México", zona="CDMX"),
-        SearchTask(query="taquería en CDMX", giro="taquería", plaza="Ciudad de México", zona="CDMX"),
+        SearchTask(
+            query="abarrotes en CDMX", giro="abarrotes", plaza="Ciudad de México", zona="CDMX"
+        ),
+        SearchTask(
+            query="taquería en CDMX", giro="taquería", plaza="Ciudad de México", zona="CDMX"
+        ),
     ]
     candidates = collect_candidates(_client(handler), tasks)
     assert [c[0]["id"] for c in candidates] == ["a1", "t1", "a2", "t2"]
@@ -150,14 +158,18 @@ def _two_stage_client(by_id: dict[str, dict]) -> tuple[PlacesClient, list[str]]:
         masks.append(mask)
         place_id = request.url.path.rsplit("/", 1)[-1]
         if mask == REVIEWS_FIELD_MASK:
-            return httpx.Response(200, json={"id": place_id, "reviews": [{"text": {"text": "hola"}}]})
+            return httpx.Response(
+                200, json={"id": place_id, "reviews": [{"text": {"text": "hola"}}]}
+            )
         return httpx.Response(200, json=by_id[place_id])
 
     return _client(handler), masks
 
 
 def test_fetch_details_respects_quota_guard():
-    client, _ = _two_stage_client({f"p{i}": {"id": f"p{i}", "displayName": {"text": "X"}} for i in range(10)})
+    client, _ = _two_stage_client(
+        {f"p{i}": {"id": f"p{i}", "displayName": {"text": "X"}} for i in range(10)}
+    )
     candidates = [({"id": f"p{i}"}, _TASK) for i in range(10)]
     fetch_details(client, candidates, max_details=3, trace_id="trc_test")
     assert client.screen_calls == 3
@@ -190,16 +202,23 @@ def test_reviews_are_bought_only_for_merchants_worth_reading():
     )
 
     assert client.screen_calls == 4
-    # A confirmed card acceptor and an unreachable merchant never earn reviews.
-    assert client.review_calls == 2
-    assert {p.place_id for p in places if p.reviews} == {"efectivo", "mudo"}
-
-
-def test_a_silent_field_buys_reviews_even_with_no_budget_left():
-    """Without reviews there is no evidence at all, so this purchase is not optional."""
-    client, _ = _two_stage_client({"mudo": _merchant("mudo", ratings=0)})
-    fetch_details(client, [({"id": "mudo"}, _TASK)], 10, "trc_test", review_budget=0)
+    # A card acceptor, an unreachable merchant and a silent field are all out of
+    # segment, so the only merchant worth a quote is the confirmed cash-only one.
     assert client.review_calls == 1
+    assert {p.place_id for p in places if p.reviews} == {"efectivo"}
+
+
+def test_a_silent_payment_field_never_buys_reviews():
+    """The cohort that used to justify a mandatory reviews call, measured and dropped.
+
+    331 merchants whose `paymentOptions` came back empty cost one Atmosphere call
+    each and converted at 1.5%: a silent field turns out to mean a quiet listing,
+    not a cash register. They are now screened out before any reviews call.
+    """
+    client, _ = _two_stage_client({"mudo": _merchant("mudo")})
+    fetch_details(client, [({"id": "mudo"}, _TASK)], 10, "trc_test", review_budget=10)
+    assert client.screen_calls == 1
+    assert client.review_calls == 0
 
 
 def test_cash_only_merchants_stop_buying_reviews_once_the_budget_runs_out():
@@ -233,9 +252,11 @@ def test_screening_stops_once_the_target_is_met():
 def test_a_failed_reviews_call_keeps_the_merchant():
     """Reviews are evidence, not identity — losing them must not lose the lead."""
     client = _client(
-        lambda request: httpx.Response(500, text="boom")
-        if request.headers["X-Goog-FieldMask"] == REVIEWS_FIELD_MASK
-        else httpx.Response(200, json=_merchant("p1", options={"acceptsCashOnly": True}))
+        lambda request: (
+            httpx.Response(500, text="boom")
+            if request.headers["X-Goog-FieldMask"] == REVIEWS_FIELD_MASK
+            else httpx.Response(200, json=_merchant("p1", options={"acceptsCashOnly": True}))
+        )
     )
 
     places = fetch_details(client, [({"id": "p1"}, _TASK)], 10, "trc_test", review_budget=10)
@@ -280,9 +301,7 @@ def test_reviews_sort_spanish_first():
             {"originalText": {"text": "Solo aceptan efectivo", "languageCode": "es"}},
         ],
     }
-    place = to_raw_place(
-        raw, query="q", plaza="CDMX", trace_id="trc_1", fetched_at="2026-08-31"
-    )
+    place = to_raw_place(raw, query="q", plaza="CDMX", trace_id="trc_1", fetched_at="2026-08-31")
     assert place.reviews[0].text == "Solo aceptan efectivo"
     assert place.reviews[0].language == "es"
 
