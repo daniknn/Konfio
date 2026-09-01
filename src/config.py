@@ -58,8 +58,12 @@ class Settings:
             # Floating alias on purpose: pinned Gemini versions get retired, and
             # a stale pin makes a fresh clone fail with a 404 instead of running.
             gemini_model=os.getenv("GEMINI_MODEL", "gemini-flash-latest"),
-            # Ceiling exists so a runaway run cannot spill past the Places free tier.
-            max_place_details=_int_env("MAX_PLACE_DETAILS", 600),
+            # Safety net against a runaway loop, not the normal stop condition —
+            # the run ends on TARGET_LEADS. Sized so the target can actually fire:
+            # at the measured 4.7 screenings per qualified lead, 500 leads needs
+            # ~2,350. A lower ceiling silently becomes the binding constraint and
+            # the run reports success on a short list.
+            max_place_details=_int_env("MAX_PLACE_DETAILS", 2500),
             target_leads=_int_env("TARGET_LEADS", 500),
             # Reviews are the Enterprise + Atmosphere SKU, the priciest in the
             # catalog, and it carries its own free monthly cap of 1,000 calls.

@@ -1,6 +1,6 @@
 [project]
 name = "tpv-growth-engine"
-version = "0.1.0"
+version = "1.0.0"
 description = "Engineered organic growth pipeline: finds Mexican SMEs that do not accept card payments and generates personalized TPV outreach."
 requires-python = ">=3.12"
 dependencies = [

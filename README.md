@@ -6,7 +6,9 @@ No paid media, no paid data vendors, no manual steps. One command, from a fresh 
 
 ## The idea in one paragraph
 
-Most lead lists are a census: they tell you a business exists. This one is an event feed. A merchant becomes a lead only when there is observable, quotable evidence *right now* that they need a terminal — Google's structured `paymentOptions` field says cash only, or their own customers wrote "solo aceptan efectivo" in a review. That evidence is not just a filter; it becomes the first line of the outreach message, which is why the reply rate should beat generic cold outbound by a wide margin.
+Most lead lists are a census: they tell you a business exists. This one is an event feed. A merchant becomes a lead only when there is observable, quotable evidence *right now* that they need a terminal — Google's own structured `paymentOptions` field reports that the business takes cash only. That evidence is not just a filter; it becomes the first line of the outreach message, which is why the reply rate should beat generic cold outbound by a wide margin.
+
+Reviews sharpen that line when a customer wrote "solo aceptan efectivo" in their own words, but they never decide eligibility — a distinction that took two runs and a measurement to arrive at, and it is the one that made the economics work.
 
 ## What the first run actually taught us
 
@@ -192,7 +194,7 @@ src/places.py            Places API client: search, Enterprise screen, Atmospher
 src/extract.py           Phase 1 — search plan, via-negativa filtering, budget guards
 src/enrich.py            Phase 2 — Gemini classification, reconciliation, CSV output
 src/pipeline.py          Entry point (`tpv-pipeline`)
-tests/                   pytest — 57 tests, no network
+tests/                   pytest — 65 tests, no network
 ```
 
 ## Design notes
