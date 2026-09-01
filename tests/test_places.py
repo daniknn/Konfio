@@ -175,6 +175,23 @@ def test_to_raw_place_maps_payment_options_and_original_review_text():
     assert place.trace_id == "trc_1"
 
 
+def test_reviews_sort_spanish_first():
+    """A tourist's English review is unusable as evidence in a Spanish message."""
+    raw = {
+        "id": "abc",
+        "displayName": {"text": "Taquería"},
+        "reviews": [
+            {"originalText": {"text": "Great tacos", "languageCode": "en"}},
+            {"originalText": {"text": "Solo aceptan efectivo", "languageCode": "es"}},
+        ],
+    }
+    place = to_raw_place(
+        raw, query="q", plaza="CDMX", trace_id="trc_1", fetched_at="2026-08-31"
+    )
+    assert place.reviews[0].text == "Solo aceptan efectivo"
+    assert place.reviews[0].language == "es"
+
+
 def test_to_raw_place_tolerates_sparse_payload():
     """Mexican SME listings are frequently missing phone, website and reviews."""
     place = to_raw_place(

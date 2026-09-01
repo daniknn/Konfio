@@ -147,10 +147,16 @@ def _payment_options(raw: dict[str, Any]) -> dict[str, bool]:
 
 
 def _reviews(raw: dict[str, Any]) -> list[Review]:
-    """Prefer originalText: we quote the merchant's customers verbatim, in Spanish."""
+    """Prefer originalText: we quote the merchant's customers verbatim, never a translation.
+
+    Spanish reviews sort first because the outreach message is in Spanish — an
+    English quote from a tourist is unusable as evidence even when it is on point.
+    """
     reviews = []
-    for item in (raw.get("reviews") or [])[:MAX_REVIEWS]:
-        text = (item.get("originalText") or item.get("text") or {}).get("text", "").strip()
+    for item in raw.get("reviews") or []:
+        original = item.get("originalText") or {}
+        source = original if original.get("text") else (item.get("text") or {})
+        text = source.get("text", "").strip()
         if not text:
             continue
         reviews.append(
@@ -158,9 +164,12 @@ def _reviews(raw: dict[str, Any]) -> list[Review]:
                 text=text,
                 rating=item.get("rating"),
                 publish_time=item.get("publishTime"),
+                language=source.get("languageCode"),
             )
         )
-    return reviews
+
+    reviews.sort(key=lambda r: not (r.language or "").startswith("es"))
+    return reviews[:MAX_REVIEWS]
 
 
 def to_raw_place(

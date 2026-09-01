@@ -31,6 +31,7 @@ class Review(BaseModel):
     text: str
     rating: int | None = None
     publish_time: str | None = None
+    language: str | None = None
 
 
 class RawPlace(BaseModel):
