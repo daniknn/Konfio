@@ -16,7 +16,7 @@ from typing import Any
 
 import httpx
 
-from .models import RawPlace, Review
+from .models import PaymentSignal, RawPlace, Review
 
 logger = logging.getLogger(__name__)
 
@@ -28,12 +28,19 @@ SEARCH_FIELD_MASK = (
     "places.primaryType,places.types,places.businessStatus,nextPageToken"
 )
 
-# Enterprise + Atmosphere: paymentOptions is the whole point of the pipeline.
-DETAILS_FIELD_MASK = (
+# Enterprise tier: everything the qualification decision needs except reviews.
+# `paymentOptions` alone disqualifies ~60% of merchants, and it is a whole SKU
+# cheaper than the reviews that would otherwise ride along on the same call.
+SCREEN_FIELD_MASK = (
     "id,displayName,formattedAddress,primaryType,types,businessStatus,"
     "nationalPhoneNumber,websiteUri,rating,userRatingCount,priceLevel,"
-    "paymentOptions,reviews"
+    "paymentOptions"
 )
+
+# Enterprise + Atmosphere, the most expensive SKU in the catalog. Billing is per
+# call at the highest tier touched, so this one asks for nothing but the reviews
+# it exists to fetch, and only for merchants that already survived the screen.
+REVIEWS_FIELD_MASK = "id,reviews"
 
 RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 MAX_ATTEMPTS = 4
@@ -54,8 +61,9 @@ class PlacesClient:
         self._api_key = api_key
         self._client = client or httpx.Client(timeout=30.0)
         self._backoff_base = backoff_base
-        self.details_calls = 0
         self.search_calls = 0
+        self.screen_calls = 0
+        self.review_calls = 0
 
     def _headers(self, field_mask: str) -> dict[str, str]:
         return {
@@ -128,14 +136,25 @@ class PlacesClient:
 
         return results
 
-    def details(self, place_id: str) -> dict[str, Any]:
+    def screen(self, place_id: str) -> dict[str, Any]:
+        """Stage 1: everything but reviews, at the Enterprise SKU."""
         payload = self._request(
             "GET",
             f"{BASE_URL}/places/{place_id}",
-            headers=self._headers(DETAILS_FIELD_MASK),
+            headers=self._headers(SCREEN_FIELD_MASK),
         )
-        self.details_calls += 1
+        self.screen_calls += 1
         return payload
+
+    def reviews(self, place_id: str) -> list[dict[str, Any]]:
+        """Stage 2: reviews only, at the Atmosphere SKU, for survivors of the screen."""
+        payload = self._request(
+            "GET",
+            f"{BASE_URL}/places/{place_id}",
+            headers=self._headers(REVIEWS_FIELD_MASK),
+        )
+        self.review_calls += 1
+        return payload.get("reviews") or []
 
     def close(self) -> None:
         self._client.close()
@@ -144,6 +163,22 @@ class PlacesClient:
 def _payment_options(raw: dict[str, Any]) -> dict[str, bool]:
     options = raw.get("paymentOptions") or {}
     return {k: v for k, v in options.items() if isinstance(v, bool)}
+
+
+def signal_from_payment_options(options: dict[str, bool]) -> PaymentSignal | None:
+    """Derive the signal from Google's structured field, or None if it is silent."""
+    if options.get("acceptsCashOnly") is True:
+        return PaymentSignal.CONFIRMED_NO_CARD
+
+    card_flags = [options.get("acceptsCreditCards"), options.get("acceptsDebitCards")]
+    known = [flag for flag in card_flags if flag is not None]
+    if not known:
+        return None
+    if any(known):
+        # Places never names the acquirer, so a card-accepting merchant is a
+        # displacement candidate; only the reviews can tell us if there is pain.
+        return PaymentSignal.COMPETITOR_TERMINAL
+    return PaymentSignal.CONFIRMED_NO_CARD
 
 
 def _reviews(raw: dict[str, Any]) -> list[Review]:

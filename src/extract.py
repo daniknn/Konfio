@@ -16,8 +16,8 @@ from typing import Any
 from ulid import ULID
 
 from .config import RAW_LEADS_PATH, SearchTask, Settings, is_chain, search_plan
-from .models import RawPlace
-from .places import PlacesClient, PlacesError, to_raw_place
+from .models import PaymentSignal, RawPlace
+from .places import PlacesClient, PlacesError, signal_from_payment_options, to_raw_place
 
 logger = logging.getLogger(__name__)
 
@@ -71,20 +71,47 @@ def collect_candidates(
     return candidates
 
 
+def _deserves_reviews(detail: dict[str, Any]) -> bool:
+    """Is this merchant worth an Atmosphere-priced call?
+
+    Two ways to be worthless: no phone means no channel to reach them, and a
+    structured field that already confirms card acceptance means they are not the
+    segment this pipeline sells to. Measured on 458 card-accepting merchants,
+    only 1% of their reviews mentioned any pain worth displacing a terminal over,
+    so paying the top SKU to read the other 99% is not worth it.
+    """
+    if not detail.get("nationalPhoneNumber"):
+        return False
+    structured = signal_from_payment_options(detail.get("paymentOptions") or {})
+    return structured is not PaymentSignal.COMPETITOR_TERMINAL
+
+
 def fetch_details(
     client: PlacesClient,
     candidates: list[tuple[dict[str, Any], SearchTask]],
     max_details: int,
     trace_id: str,
 ) -> list[RawPlace]:
+    """Screen every candidate at the Enterprise SKU, buy reviews only for survivors."""
     places: list[RawPlace] = []
+    skipped = 0
 
     for place, task in candidates[:max_details]:
         try:
-            detail = client.details(place["id"])
+            detail = client.screen(place["id"])
         except PlacesError:
-            logger.exception("Detalles fallidos para %s", place["id"])
+            logger.exception("Screening fallido para %s", place["id"])
             continue
+
+        if _deserves_reviews(detail):
+            try:
+                detail["reviews"] = client.reviews(place["id"])
+            except PlacesError:
+                # Reviews are evidence, not identity: keep the merchant without them.
+                logger.exception("Reseñas fallidas para %s", place["id"])
+        else:
+            skipped += 1
+
         places.append(
             to_raw_place(
                 detail,
@@ -95,6 +122,7 @@ def fetch_details(
             )
         )
 
+    logger.info("Reseñas omitidas en %d comercios sin teléfono o con tarjeta confirmada", skipped)
     return places
 
 
@@ -121,10 +149,11 @@ def run_extraction(settings: Settings, trace_id: str) -> list[RawPlace]:
 
     write_raw_leads(places)
     logger.info(
-        "Extracción lista: %d comercios · %d búsquedas · %d detalles → %s",
+        "Extracción lista: %d comercios · %d búsquedas · %d screenings · %d reseñas → %s",
         len(places),
         client.search_calls,
-        client.details_calls,
+        client.screen_calls,
+        client.review_calls,
         RAW_LEADS_PATH,
     )
     return places

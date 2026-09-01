@@ -3,7 +3,7 @@ import pytest
 
 from src.config import SearchTask, is_chain
 from src.extract import collect_candidates, fetch_details
-from src.places import PlacesClient, PlacesError, to_raw_place
+from src.places import REVIEWS_FIELD_MASK, PlacesClient, PlacesError, to_raw_place
 
 
 def _place(place_id: str, name: str, status: str = "OPERATIONAL") -> dict:
@@ -96,7 +96,7 @@ def test_collect_candidates_drops_chains_closed_and_duplicates():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=payload)
 
-    tasks = [SearchTask(query="abarrotes en CDMX", giro="abarrotes", plaza="Ciudad de México")]
+    tasks = [SearchTask(query="abarrotes en CDMX", giro="abarrotes", plaza="Ciudad de México", zona="CDMX")]
     candidates = collect_candidates(_client(handler), tasks)
     assert [c[0]["id"] for c in candidates] == ["keep"]
 
@@ -115,8 +115,8 @@ def test_collect_candidates_interleaves_across_queries():
         return httpx.Response(200, json=by_query[query])
 
     tasks = [
-        SearchTask(query="abarrotes en CDMX", giro="abarrotes", plaza="Ciudad de México"),
-        SearchTask(query="taquería en CDMX", giro="taquería", plaza="Ciudad de México"),
+        SearchTask(query="abarrotes en CDMX", giro="abarrotes", plaza="Ciudad de México", zona="CDMX"),
+        SearchTask(query="taquería en CDMX", giro="taquería", plaza="Ciudad de México", zona="CDMX"),
     ]
     candidates = collect_candidates(_client(handler), tasks)
     assert [c[0]["id"] for c in candidates] == ["a1", "t1", "a2", "t2"]
@@ -131,22 +131,93 @@ def test_failed_search_does_not_abort_the_run():
         return httpx.Response(200, json={"places": [_place("ok", "Buena")]})
 
     tasks = [
-        SearchTask(query="rota", giro="x", plaza="CDMX"),
-        SearchTask(query="buena", giro="y", plaza="CDMX"),
+        SearchTask(query="rota", giro="x", plaza="CDMX", zona="CDMX"),
+        SearchTask(query="buena", giro="y", plaza="CDMX", zona="CDMX"),
     ]
     candidates = collect_candidates(_client(handler), tasks)
     assert [c[0]["id"] for c in candidates] == ["ok"]
 
 
-def test_fetch_details_respects_quota_guard():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"id": "x", "displayName": {"text": "X"}})
+_TASK = SearchTask(query="q", giro="g", plaza="CDMX", zona="CDMX")
 
-    client = _client(handler)
-    task = SearchTask(query="q", giro="g", plaza="CDMX")
-    candidates = [({"id": f"p{i}"}, task) for i in range(10)]
+
+def _two_stage_client(by_id: dict[str, dict]) -> tuple[PlacesClient, list[str]]:
+    """Serves the screen and reviews masks separately, recording which was asked for."""
+    masks: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        mask = request.headers["X-Goog-FieldMask"]
+        masks.append(mask)
+        place_id = request.url.path.rsplit("/", 1)[-1]
+        if mask == REVIEWS_FIELD_MASK:
+            return httpx.Response(200, json={"id": place_id, "reviews": [{"text": {"text": "hola"}}]})
+        return httpx.Response(200, json=by_id[place_id])
+
+    return _client(handler), masks
+
+
+def test_fetch_details_respects_quota_guard():
+    client, _ = _two_stage_client({f"p{i}": {"id": f"p{i}", "displayName": {"text": "X"}} for i in range(10)})
+    candidates = [({"id": f"p{i}"}, _TASK) for i in range(10)]
     fetch_details(client, candidates, max_details=3, trace_id="trc_test")
-    assert client.details_calls == 3
+    assert client.screen_calls == 3
+
+
+def test_reviews_are_bought_only_for_merchants_worth_reading():
+    """The reviews call is the priciest SKU, so it is the one we ration."""
+    by_id = {
+        "cash": {
+            "id": "cash",
+            "displayName": {"text": "Tortillería"},
+            "nationalPhoneNumber": "55 1234 5678",
+            "paymentOptions": {"acceptsCashOnly": True},
+        },
+        "card": {
+            "id": "card",
+            "displayName": {"text": "Cafetería Polanco"},
+            "nationalPhoneNumber": "55 1234 5678",
+            "paymentOptions": {"acceptsCreditCards": True},
+        },
+        "mudo": {
+            "id": "mudo",
+            "displayName": {"text": "Miscelánea"},
+            "nationalPhoneNumber": "55 1234 5678",
+            "paymentOptions": {},
+        },
+        "sin_tel": {
+            "id": "sin_tel",
+            "displayName": {"text": "Puesto"},
+            "paymentOptions": {"acceptsCashOnly": True},
+        },
+    }
+    client, _ = _two_stage_client(by_id)
+    candidates = [({"id": pid}, _TASK) for pid in by_id]
+    places = fetch_details(client, candidates, max_details=10, trace_id="trc_test")
+
+    assert client.screen_calls == 4
+    # Cash-only and silent merchants earn their reviews; a confirmed card
+    # acceptor and an unreachable one do not.
+    assert client.review_calls == 2
+    assert {p.place_id for p in places if p.reviews} == {"cash", "mudo"}
+
+
+def test_a_failed_reviews_call_keeps_the_merchant():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.headers["X-Goog-FieldMask"] == REVIEWS_FIELD_MASK:
+            return httpx.Response(500, text="boom")
+        return httpx.Response(
+            200,
+            json={
+                "id": "p1",
+                "displayName": {"text": "Tortillería"},
+                "nationalPhoneNumber": "55 1234 5678",
+                "paymentOptions": {"acceptsCashOnly": True},
+            },
+        )
+
+    places = fetch_details(_client(handler), [({"id": "p1"}, _TASK)], 10, "trc_test")
+    assert [p.place_id for p in places] == ["p1"]
+    assert places[0].reviews == []
 
 
 def test_to_raw_place_maps_payment_options_and_original_review_text():

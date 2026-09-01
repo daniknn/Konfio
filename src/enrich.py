@@ -22,6 +22,7 @@ from google.genai import errors, types
 from .config import PROCESSED_LEADS_PATH, PROHIBITED_TERMS, Settings
 from .mcc import catalog_prompt_block, in_scope_catalog, is_in_scope, lookup
 from .models import ClassifiedLead, LeadClassification, PaymentSignal, ProcessedLead, RawPlace
+from .places import signal_from_payment_options
 
 logger = logging.getLogger(__name__)
 
@@ -158,11 +159,25 @@ def _is_retryable(exc: errors.APIError) -> bool:
     return isinstance(exc, errors.ServerError) or exc.code == 429
 
 
+def _finish_reason(response: Any) -> str:
+    candidates = getattr(response, "candidates", None) or []
+    reason = getattr(candidates[0], "finish_reason", None) if candidates else None
+    return str(reason) if reason else "sin finish_reason"
+
+
 def _parse_response(response: Any) -> list[ClassifiedLead]:
     parsed = getattr(response, "parsed", None)
     if parsed:
         return list(parsed)
-    return [ClassifiedLead.model_validate(item) for item in json.loads(response.text)]
+
+    text = getattr(response, "text", None)
+    if not text:
+        # Structured output comes back empty when the batch is truncated or a
+        # safety filter trips. The batch is lost either way; name the cause so
+        # the log says more than "NoneType is not str".
+        raise RuntimeError(f"Gemini devolvió una respuesta vacía ({_finish_reason(response)})")
+
+    return [ClassifiedLead.model_validate(item) for item in json.loads(text)]
 
 
 def violates_compliance(message: str) -> str | None:
@@ -171,22 +186,6 @@ def violates_compliance(message: str) -> str | None:
         if term in lowered:
             return term
     return None
-
-
-def signal_from_payment_options(options: dict[str, bool]) -> PaymentSignal | None:
-    """Derive the signal from Google's structured field, or None if it is silent."""
-    if options.get("acceptsCashOnly") is True:
-        return PaymentSignal.CONFIRMED_NO_CARD
-
-    card_flags = [options.get("acceptsCreditCards"), options.get("acceptsDebitCards")]
-    known = [flag for flag in card_flags if flag is not None]
-    if not known:
-        return None
-    if any(known):
-        # Places never names the acquirer, so a card-accepting merchant is a
-        # displacement candidate; only the reviews can tell us if there is pain.
-        return PaymentSignal.COMPETITOR_TERMINAL
-    return PaymentSignal.CONFIRMED_NO_CARD
 
 
 def reconcile_signal(place: RawPlace, model_signal: PaymentSignal) -> PaymentSignal:

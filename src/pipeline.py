@@ -9,7 +9,7 @@ from .config import MissingCredentialError, Settings
 from .enrich import build_classifier, run_enrichment, write_processed_leads
 from .extract import new_trace_id, run_extraction
 from .models import PaymentSignal, ProcessedLead
-from .places import PlacesError
+from .places import PlacesError, signal_from_payment_options
 
 
 def _configure_logging() -> None:
@@ -41,9 +41,17 @@ def main() -> int:
 
     log.info("Fase 1 completa: %d comercios extraídos", len(places))
 
-    # No phone means no channel, and the LLM call is the expensive step.
-    reachable = [p for p in places if p.phone]
-    log.info("%d de %d comercios tienen teléfono público", len(reachable), len(places))
+    # Two ways to be unsellable, both decidable without an LLM call: no published
+    # phone means no channel, and a structured field confirming card acceptance
+    # means this merchant is not the segment. Both are checked before Gemini
+    # because the model is the expensive step and code already knows the answer.
+    reachable = [
+        p
+        for p in places
+        if p.phone
+        and signal_from_payment_options(p.payment_options) is not PaymentSignal.COMPETITOR_TERMINAL
+    ]
+    log.info("%d de %d comercios llegan a Gemini", len(reachable), len(places))
 
     classifier = build_classifier(settings)
     leads = run_enrichment(reachable, classifier, trace_id, settings.gemini_batch_size)

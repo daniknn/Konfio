@@ -96,6 +96,19 @@ def test_classifier_raises_after_exhausting_retries():
     assert models.calls == 3
 
 
+def test_empty_structured_output_names_the_finish_reason():
+    """A truncated batch used to surface as 'NoneType is not str', which explains nothing."""
+    truncated = SimpleNamespace(
+        parsed=None,
+        text=None,
+        candidates=[SimpleNamespace(finish_reason="MAX_TOKENS")],
+        usage_metadata=None,
+    )
+    classifier, _ = _gemini([truncated])
+    with pytest.raises(RuntimeError, match="MAX_TOKENS"):
+        classifier.classify([_place()])
+
+
 def test_classifier_does_not_retry_a_bad_request():
     classifier, models = _gemini([errors.ClientError(400, {"error": {"message": "malo"}})])
     with pytest.raises(errors.ClientError):

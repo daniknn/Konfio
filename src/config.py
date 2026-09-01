@@ -100,28 +100,58 @@ FAMILIAS_EN_SCOPE = frozenset(
     }
 )
 
-# Text Search queries. Each yields up to 20 places per call, so this plan is sized
-# to reach TARGET_LEADS with room to spare after disqualification.
-PLAZAS = ("Ciudad de México", "Guadalajara", "Monterrey")
+# Text Search ranks by prominence, so a query aimed at a metro area returns the
+# most established businesses in the most banked districts of the country — which
+# are exactly the ones that already own a terminal. Measured over 600 merchants:
+# the three metro cores yielded 5% cash-only, while the municipalities below
+# yielded 40-80%. Same code and same cost per merchant for ~10x the addressable
+# rate, so the targeting hypothesis — not the scraper — is the actual product.
+#
+# `plaza` stays the metro area for reporting; `zona` is what goes into the query.
+ZONAS = (
+    ("Ciudad de México", "Iztapalapa, Ciudad de México"),
+    ("Ciudad de México", "Gustavo A. Madero, Ciudad de México"),
+    ("Ciudad de México", "Tláhuac, Ciudad de México"),
+    ("Ciudad de México", "Xochimilco, Ciudad de México"),
+    ("Ciudad de México", "Iztacalco, Ciudad de México"),
+    ("Ciudad de México", "Nezahualcóyotl, Estado de México"),
+    ("Ciudad de México", "Ecatepec, Estado de México"),
+    ("Ciudad de México", "Chimalhuacán, Estado de México"),
+    ("Ciudad de México", "Chalco, Estado de México"),
+    ("Ciudad de México", "Valle de Chalco, Estado de México"),
+    ("Ciudad de México", "Tultitlán, Estado de México"),
+    ("Guadalajara", "Tonalá, Jalisco"),
+    ("Guadalajara", "Tlaquepaque, Jalisco"),
+    ("Guadalajara", "El Salto, Jalisco"),
+    ("Guadalajara", "Tlajomulco de Zúñiga, Jalisco"),
+    ("Monterrey", "Guadalupe, Nuevo León"),
+    ("Monterrey", "General Escobedo, Nuevo León"),
+    ("Monterrey", "Apodaca, Nuevo León"),
+    ("Monterrey", "Juárez, Nuevo León"),
+    ("Monterrey", "García, Nuevo León"),
+)
 
+# Giros chosen for cash operation, not for size: each maps to a FAMILIA in scope,
+# and each is a trade where the owner still rings up the sale by hand.
 GIRO_QUERIES = (
-    "abarrotes",
-    "barbería",
-    "cafetería",
+    "tortillería",
+    "recaudería",
+    "miscelánea",
+    "cremería",
+    "pollería",
     "carnicería",
-    "consultorio dental",
-    "estética y salón de belleza",
-    "farmacia independiente",
-    "ferretería",
     "fonda económica",
-    "juguería",
-    "lavandería",
-    "mercería",
-    "papelería",
-    "refaccionaria automotriz",
     "taquería",
+    "panadería",
+    "papelería",
+    "mercería",
+    "estética y salón de belleza",
+    "barbería",
+    "tlapalería y ferretería",
+    "refaccionaria automotriz",
+    "farmacia independiente",
+    "consultorio dental",
     "tienda de ropa",
-    "veterinaria",
 )
 
 
@@ -164,13 +194,14 @@ class SearchTask:
     query: str
     giro: str
     plaza: str
+    zona: str
 
 
 def search_plan() -> list[SearchTask]:
-    """Cartesian product of giro x plaza, e.g. 'taquería en Monterrey'."""
+    """Cartesian product of giro x zona, e.g. 'tortillería en Iztapalapa, Ciudad de México'."""
     return [
-        SearchTask(query=f"{giro} en {plaza}", giro=giro, plaza=plaza)
-        for plaza in PLAZAS
+        SearchTask(query=f"{giro} en {zona}", giro=giro, plaza=plaza, zona=zona)
+        for plaza, zona in ZONAS
         for giro in GIRO_QUERIES
     ]
 
