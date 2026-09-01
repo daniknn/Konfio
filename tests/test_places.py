@@ -163,59 +163,83 @@ def test_fetch_details_respects_quota_guard():
     assert client.screen_calls == 3
 
 
+def _merchant(place_id: str, *, phone=True, options=None, ratings=500) -> dict:
+    detail = {
+        "id": place_id,
+        "displayName": {"text": place_id},
+        "paymentOptions": options if options is not None else {},
+        "userRatingCount": ratings,
+    }
+    if phone:
+        detail["nationalPhoneNumber"] = "55 1234 5678"
+    return detail
+
+
 def test_reviews_are_bought_only_for_merchants_worth_reading():
     """The reviews call is the priciest SKU, so it is the one we ration."""
     by_id = {
-        "cash": {
-            "id": "cash",
-            "displayName": {"text": "Tortillería"},
-            "nationalPhoneNumber": "55 1234 5678",
-            "paymentOptions": {"acceptsCashOnly": True},
-        },
-        "card": {
-            "id": "card",
-            "displayName": {"text": "Cafetería Polanco"},
-            "nationalPhoneNumber": "55 1234 5678",
-            "paymentOptions": {"acceptsCreditCards": True},
-        },
-        "mudo": {
-            "id": "mudo",
-            "displayName": {"text": "Miscelánea"},
-            "nationalPhoneNumber": "55 1234 5678",
-            "paymentOptions": {},
-        },
-        "sin_tel": {
-            "id": "sin_tel",
-            "displayName": {"text": "Puesto"},
-            "paymentOptions": {"acceptsCashOnly": True},
-        },
+        "efectivo": _merchant("efectivo", options={"acceptsCashOnly": True}),
+        "tarjeta": _merchant("tarjeta", options={"acceptsCreditCards": True}),
+        "mudo": _merchant("mudo"),
+        "sin_tel": _merchant("sin_tel", phone=False, options={"acceptsCashOnly": True}),
     }
     client, _ = _two_stage_client(by_id)
     candidates = [({"id": pid}, _TASK) for pid in by_id]
-    places = fetch_details(client, candidates, max_details=10, trace_id="trc_test")
+    places = fetch_details(
+        client, candidates, max_details=10, trace_id="trc_test", review_budget=10
+    )
 
     assert client.screen_calls == 4
-    # Cash-only and silent merchants earn their reviews; a confirmed card
-    # acceptor and an unreachable one do not.
+    # A confirmed card acceptor and an unreachable merchant never earn reviews.
     assert client.review_calls == 2
-    assert {p.place_id for p in places if p.reviews} == {"cash", "mudo"}
+    assert {p.place_id for p in places if p.reviews} == {"efectivo", "mudo"}
+
+
+def test_a_silent_field_buys_reviews_even_with_no_budget_left():
+    """Without reviews there is no evidence at all, so this purchase is not optional."""
+    client, _ = _two_stage_client({"mudo": _merchant("mudo", ratings=0)})
+    fetch_details(client, [({"id": "mudo"}, _TASK)], 10, "trc_test", review_budget=0)
+    assert client.review_calls == 1
+
+
+def test_cash_only_merchants_stop_buying_reviews_once_the_budget_runs_out():
+    """Google already qualified them; the quote is a nicety, and niceties have a cap."""
+    by_id = {f"p{i}": _merchant(f"p{i}", options={"acceptsCashOnly": True}) for i in range(5)}
+    client, _ = _two_stage_client(by_id)
+    candidates = [({"id": pid}, _TASK) for pid in by_id]
+    fetch_details(client, candidates, 10, "trc_test", review_budget=2)
+    assert client.screen_calls == 5
+    assert client.review_calls == 2
+
+
+def test_a_quiet_cash_only_merchant_is_not_worth_a_quote():
+    """Three reviews will not contain the sentence we are paying to read."""
+    by_id = {"tienda": _merchant("tienda", options={"acceptsCashOnly": True}, ratings=3)}
+    client, _ = _two_stage_client(by_id)
+    fetch_details(client, [({"id": "tienda"}, _TASK)], 10, "trc_test", review_budget=10)
+    assert client.review_calls == 0
+
+
+def test_screening_stops_once_the_target_is_met():
+    """The budget guard should fire on having enough leads, not on having spent enough."""
+    by_id = {f"p{i}": _merchant(f"p{i}", options={"acceptsCashOnly": True}) for i in range(20)}
+    client, _ = _two_stage_client(by_id)
+    candidates = [({"id": pid}, _TASK) for pid in by_id]
+    fetch_details(client, candidates, 20, "trc_test", target=3, review_budget=20)
+    assert client.screen_calls == 3
+    assert client.review_calls == 3
 
 
 def test_a_failed_reviews_call_keeps_the_merchant():
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.headers["X-Goog-FieldMask"] == REVIEWS_FIELD_MASK:
-            return httpx.Response(500, text="boom")
-        return httpx.Response(
-            200,
-            json={
-                "id": "p1",
-                "displayName": {"text": "Tortillería"},
-                "nationalPhoneNumber": "55 1234 5678",
-                "paymentOptions": {"acceptsCashOnly": True},
-            },
-        )
+    """Reviews are evidence, not identity — losing them must not lose the lead."""
+    client = _client(
+        lambda request: httpx.Response(500, text="boom")
+        if request.headers["X-Goog-FieldMask"] == REVIEWS_FIELD_MASK
+        else httpx.Response(200, json=_merchant("p1", options={"acceptsCashOnly": True}))
+    )
 
-    places = fetch_details(_client(handler), [({"id": "p1"}, _TASK)], 10, "trc_test")
+    places = fetch_details(client, [({"id": "p1"}, _TASK)], 10, "trc_test", review_budget=10)
+    assert client.review_calls == 0  # four attempts, all refused
     assert [p.place_id for p in places] == ["p1"]
     assert places[0].reviews == []
 

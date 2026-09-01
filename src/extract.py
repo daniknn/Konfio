@@ -21,6 +21,14 @@ from .places import PlacesClient, PlacesError, signal_from_payment_options, to_r
 
 logger = logging.getLogger(__name__)
 
+# Screen this much past TARGET_LEADS to absorb the losses that only show up after
+# the LLM has read the reviews. Measured at 1.25 on the first corrected run.
+OVERSHOOT = 1.25
+
+# Below this, Google returns two or three reviews and none of them mention how
+# the customer paid — not enough for a quote worth the priciest SKU we have.
+MIN_REVIEWS_TO_QUOTE = 30
+
 
 def new_trace_id() -> str:
     return f"trc_{ULID()}"
@@ -71,14 +79,14 @@ def collect_candidates(
     return candidates
 
 
-def _deserves_reviews(detail: dict[str, Any]) -> bool:
-    """Is this merchant worth an Atmosphere-priced call?
+def _is_prospect(detail: dict[str, Any]) -> bool:
+    """Could this merchant ever buy a terminal from us?
 
-    Two ways to be worthless: no phone means no channel to reach them, and a
-    structured field that already confirms card acceptance means they are not the
-    segment this pipeline sells to. Measured on 458 card-accepting merchants,
-    only 1% of their reviews mentioned any pain worth displacing a terminal over,
-    so paying the top SKU to read the other 99% is not worth it.
+    Two ways to be unsellable, both decidable from the cheap screen: no published
+    phone means no channel, and a structured field confirming card acceptance
+    means the merchant is not this segment. Measured on 458 card-accepting
+    merchants, only 1% of their reviews mentioned any pain worth displacing a
+    terminal over, so paying the top SKU to read the other 99% is not worth it.
     """
     if not detail.get("nationalPhoneNumber"):
         return False
@@ -86,31 +94,57 @@ def _deserves_reviews(detail: dict[str, Any]) -> bool:
     return structured is not PaymentSignal.COMPETITOR_TERMINAL
 
 
+def _needs_reviews(detail: dict[str, Any]) -> bool:
+    """Reviews are the only evidence that can qualify a merchant Google is silent about."""
+    return signal_from_payment_options(detail.get("paymentOptions") or {}) is None
+
+
 def fetch_details(
     client: PlacesClient,
     candidates: list[tuple[dict[str, Any], SearchTask]],
     max_details: int,
     trace_id: str,
+    target: int | None = None,
+    review_budget: int = 0,
 ) -> list[RawPlace]:
-    """Screen every candidate at the Enterprise SKU, buy reviews only for survivors."""
+    """Screen every candidate at the Enterprise SKU, buy reviews only where they pay.
+
+    `max_details` is the safety ceiling that keeps a runaway run from spending
+    real money. `target` is the one that normally fires: once enough merchants
+    have survived the screen there is nothing left to buy, so the run stops on
+    the result it wanted rather than on the budget it was allowed.
+
+    A merchant Google is silent about always gets its reviews — they are the only
+    evidence that can qualify it. One Google already flags as cash-only is
+    qualified either way, so its reviews are bought only while `review_budget`
+    lasts, and only when there are enough of them for a quote to exist.
+    """
     places: list[RawPlace] = []
-    skipped = 0
+    prospects = 0
+    budget = review_budget
 
     for place, task in candidates[:max_details]:
+        if target is not None and prospects >= target:
+            logger.info("Objetivo de %d prospectos alcanzado; se detiene el screening", target)
+            break
+
         try:
             detail = client.screen(place["id"])
         except PlacesError:
             logger.exception("Screening fallido para %s", place["id"])
             continue
 
-        if _deserves_reviews(detail):
-            try:
-                detail["reviews"] = client.reviews(place["id"])
-            except PlacesError:
-                # Reviews are evidence, not identity: keep the merchant without them.
-                logger.exception("Reseñas fallidas para %s", place["id"])
-        else:
-            skipped += 1
+        if _is_prospect(detail):
+            prospects += 1
+            quotable = (detail.get("userRatingCount") or 0) >= MIN_REVIEWS_TO_QUOTE
+            if _needs_reviews(detail) or (budget > 0 and quotable):
+                if not _needs_reviews(detail):
+                    budget -= 1
+                try:
+                    detail["reviews"] = client.reviews(place["id"])
+                except PlacesError:
+                    # Reviews are evidence, not identity: keep the merchant without them.
+                    logger.exception("Reseñas fallidas para %s", place["id"])
 
         places.append(
             to_raw_place(
@@ -122,7 +156,13 @@ def fetch_details(
             )
         )
 
-    logger.info("Reseñas omitidas en %d comercios sin teléfono o con tarjeta confirmada", skipped)
+    logger.info(
+        "%d prospectos de %d comercios · %d de %d reseñas opcionales compradas",
+        prospects,
+        len(places),
+        review_budget - budget,
+        review_budget,
+    )
     return places
 
 
@@ -143,7 +183,16 @@ def run_extraction(settings: Settings, trace_id: str) -> list[RawPlace]:
             len(candidates),
             settings.max_place_details,
         )
-        places = fetch_details(client, candidates, settings.max_place_details, trace_id)
+        # Some survivors still fall out at the LLM stage (out-of-scope MCC, a
+        # model that reads the reviews and finds a terminal), so aim past target.
+        places = fetch_details(
+            client,
+            candidates,
+            settings.max_place_details,
+            trace_id,
+            target=int(settings.target_leads * OVERSHOOT),
+            review_budget=settings.review_budget,
+        )
     finally:
         client.close()
 

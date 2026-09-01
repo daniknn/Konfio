@@ -47,6 +47,7 @@ class Settings:
     gemini_model: str
     max_place_details: int
     target_leads: int
+    review_budget: int
     gemini_batch_size: int
 
     @classmethod
@@ -60,6 +61,12 @@ class Settings:
             # Ceiling exists so a runaway run cannot spill past the Places free tier.
             max_place_details=_int_env("MAX_PLACE_DETAILS", 600),
             target_leads=_int_env("TARGET_LEADS", 500),
+            # Reviews are the Enterprise + Atmosphere SKU, the priciest in the
+            # catalog, and it carries its own free monthly cap of 1,000 calls.
+            # A merchant whose paymentOptions field is silent needs its reviews
+            # to qualify at all; one Google already flags as cash-only does not,
+            # so those spend from this budget only while it lasts.
+            review_budget=_int_env("REVIEW_BUDGET", 1000),
             # Batching amortizes the ~3K-token catalog prefix across merchants.
             gemini_batch_size=_int_env("GEMINI_BATCH_SIZE", 10),
         )
