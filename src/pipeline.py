@@ -45,11 +45,16 @@ def main() -> int:
     reachable = [p for p in places if p.phone]
     log.info("%d de %d comercios tienen teléfono público", len(reachable), len(places))
 
-    leads = run_enrichment(
-        reachable, build_classifier(settings), trace_id, settings.gemini_batch_size
-    )
+    classifier = build_classifier(settings)
+    leads = run_enrichment(reachable, classifier, trace_id, settings.gemini_batch_size)
     write_processed_leads(leads)
     _log_funnel(log, len(places), len(reachable), leads)
+    log.info(
+        "Gemini: %d llamadas · %d tokens de entrada · %d de salida",
+        classifier.calls,
+        classifier.prompt_tokens,
+        classifier.output_tokens,
+    )
     return 0
 
 
