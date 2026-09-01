@@ -1,0 +1,34 @@
+[project]
+name = "tpv-growth-engine"
+version = "0.1.0"
+description = "Engineered organic growth pipeline: finds Mexican SMEs that do not accept card payments and generates personalized TPV outreach."
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.27",
+    "pydantic>=2.7",
+    "google-genai>=1.0",
+    "python-dotenv>=1.0",
+    "python-ulid>=2.4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+tpv-pipeline = "src.pipeline:main"
+
+[tool.setuptools]
+packages = ["src"]
+
+[tool.setuptools.package-data]
+src = ["py.typed"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
