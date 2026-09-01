@@ -103,6 +103,56 @@ GIRO_QUERIES = (
 )
 
 
-def search_plan() -> list[str]:
+# National chains buy card acquiring centrally, so a branch manager cannot say yes.
+# Matched as substrings against the lowercased place name.
+CHAIN_BRANDS = frozenset(
+    {
+        "7-eleven",
+        "autozone",
+        "bodega aurrera",
+        "burger king",
+        "chedraui",
+        "cinépolis",
+        "circle k",
+        "coppel",
+        "domino",
+        "elektra",
+        "farmacia benavides",
+        "farmacias del ahorro",
+        "farmacias guadalajara",
+        "farmacias similares",
+        "home depot",
+        "kfc",
+        "little caesars",
+        "mcdonald",
+        "oxxo",
+        "sanborns",
+        "soriana",
+        "starbucks",
+        "subway",
+        "superama",
+        "telcel",
+        "walmart",
+    }
+)
+
+
+@dataclass(frozen=True)
+class SearchTask:
+    query: str
+    giro: str
+    plaza: str
+
+
+def search_plan() -> list[SearchTask]:
     """Cartesian product of giro x plaza, e.g. 'taquería en Monterrey'."""
-    return [f"{giro} en {plaza}" for plaza in PLAZAS for giro in GIRO_QUERIES]
+    return [
+        SearchTask(query=f"{giro} en {plaza}", giro=giro, plaza=plaza)
+        for plaza in PLAZAS
+        for giro in GIRO_QUERIES
+    ]
+
+
+def is_chain(name: str) -> bool:
+    lowered = name.lower()
+    return any(brand in lowered for brand in CHAIN_BRANDS)
