@@ -31,6 +31,7 @@ class Review(BaseModel):
     text: str
     rating: int | None = None
     publish_time: str | None = None
+    language: str | None = None
 
 
 class RawPlace(BaseModel):
@@ -74,9 +75,7 @@ class LeadClassification(BaseModel):
         ge=0, le=100, description="Probabilidad de que este comercio adopte una terminal hoy."
     )
     eligible: bool = Field(description="Si califica como lead de TPV para Konfío.")
-    disqualifier: str = Field(
-        description="Motivo del descarte, o cadena vacía si es elegible."
-    )
+    disqualifier: str = Field(description="Motivo del descarte, o cadena vacía si es elegible.")
     outreach_message: str = Field(
         description=(
             "Mensaje de WhatsApp en español mexicano, máximo 50 palabras, tuteando, "
@@ -84,6 +83,17 @@ class LeadClassification(BaseModel):
         )
     )
     rationale: str = Field(description="Una frase explicando la clasificación.")
+
+
+class ClassifiedLead(LeadClassification):
+    """A classification carrying the merchant it belongs to.
+
+    Batched calls send several merchants at once, so the model must echo the
+    place_id back — matching replies to merchants by array position silently
+    corrupts the whole batch the first time the model drops an item.
+    """
+
+    place_id: str = Field(description="El place_id exacto del comercio, copiado tal cual.")
 
 
 class ProcessedLead(BaseModel):
